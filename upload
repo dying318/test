@@ -1,0 +1,675 @@
+<template>
+  <div class="upload-box">
+    <div class="avatar-uploader-box">
+      <!-- 方框样式 -->
+      <el-upload
+        v-if="!fileUrl"
+        class="avatar-uploader"
+        :action="$store.state.settings.actionUrl"
+        :show-file-list="false"
+        :on-change="handleFileChange"
+        :auto-upload="false"
+        :accept="type + '/*'"
+      >
+        <span
+          v-if="!fileUrl"
+          v-loading="loading"
+          element-loading-text="上传中"
+          element-loading-spinner="el-icon-loading"
+          element-loading-background="rgba(0, 0, 0, 0.8)"
+          style="line-height:30px;"
+        >
+          <i class="el-icon-plus avatar-uploader-icon"></i>
+        </span>
+      </el-upload>
+      <!-- 上传的图片 -->
+      <img
+        v-if="type === 'image' && fileUrl"
+        :src="fileUrl"
+        class="avatar"
+        @mouseover.stop="isShowPopup = true"
+      >
+      <video
+        v-if="type === 'video' && fileUrl"
+        style="max-width:240px"
+        :src="fileUrl"
+        controls
+        @mouseover.stop="isShowPopup = true"
+      />
+      <a
+        v-if="type === 'file' && fileUrl"
+        :href="fileUrl"
+        target="_blank"
+        @mouseover.stop="isShowPopup = true"
+      >
+        <div class="file-placeholder">
+          <img slot="error" src="@/assets/img/file.png">
+          <p>上传成功</p>
+        </div>
+      </a>
+      <!-- 显示查看和删除的按钮弹窗 -->
+      <div
+        v-show="fileUrl && isShowPopup"
+        class="avatar-uploader-popup"
+        :style="{height: type === 'video' ? '50%' : '100%'}"
+        @mouseleave="isShowPopup = false"
+      >
+        <i v-if="type === 'image'" class="el-icon-zoom-in" @click="dialogVisible = true"></i>
+        <i class="el-icon-delete" @click="delfileUrl"></i>
+      </div>
+    </div>
+    <!-- 查看图片 -->
+    <el-image-viewer v-if="dialogVisible" :on-close="closeViewer" :url-list="[fileUrl]"/>
+  </div>
+</template>
+
+<script>
+import axios from "axios";
+import { getqiniuToken, getOssSign } from "@/api/auth";
+import VueCropper from "./components/cropper";
+import ElImageViewer from "element-ui/packages/image/src/image-viewer";
+// 上传图片 export const uploadOss = params => http.upload(`/sys/oss/upload`, params)
+
+export default {
+  name: "UploadItem",
+  components: {
+    VueCropper,
+    ElImageViewer
+  },
+  props: {
+    type: {
+      type: String,
+      default: "avatar"
+    },
+    value: {
+      type: String,
+      default: ""
+    }
+  },
+  data() {
+    return {
+      loading: false,
+      isShowPopup: false,
+      dialogVisible: false,
+      isProgress: false,
+      percentage: 0,
+      fileUrl: "",
+      contentType: "image/*",
+      aliyunOssToken: null
+    };
+  },
+  watch: {
+    value: {
+      handler(val) {
+        if (val) {
+          this.fileUrl = this.$store.state.settings.imgHead + val;
+        } else {
+          this.fileUrl = "";
+        }
+      }
+    }
+  },
+  mounted() {
+    if (this.value) {
+      this.fileUrl = this.$store.state.settings.imgHead + this.value;
+    } else {
+      this.fileUrl = "";
+    }
+  },
+  methods: {
+    // 上传之前
+    beforeAvatarUpload(file) {
+      return new Promise((resolve, reject) => {
+        // if (file.size > 5 * 1024 * 1024) {
+        //   return reject('上传文件大小不能超过5M!')
+        // }
+
+        resolve("符合表單規則");
+      });
+    },
+
+    // 上传改变
+    async handleFileChange(file, fileList) {
+      try {
+        await this.beforeAvatarUpload(file);
+        this.loading = true;
+        await this.uploadAliOss(file);
+        this.loading = false;
+      } catch (e) {
+        console.log(e);
+        this.$message.warning(JSON.stringify(e));
+      }
+    },
+    // 上传图片接口
+    async uploadOssApi(file) {
+      try {
+        const {
+          data: { qiniuToken: token }
+        } = await getqiniuToken();
+
+        const params = new FormData();
+        params.append("token", token);
+        params.append("file", file.raw);
+        params.append(
+          "key",
+          this.uuid() + file.name.substr(file.name.lastIndexOf("."))
+        );
+
+        const {
+          data: { hash, key }
+        } = await axios.post(this.$store.state.settings.actionUrl, params);
+
+        this.fileUrl = this.$store.state.settings.imgHead + key;
+        this.isProgress = false;
+        this.$emit("input", key);
+      } catch (err) {
+        this.$message.error("上传失败");
+        this.fileUrl = "";
+        this.isProgress = false;
+        this.$emit("input", "");
+      }
+    },
+    async uploadAliOss(file) {
+      if (!this.aliyunOssToken) {
+        const { data: aliyunOssToken } = await getOssSign();
+        this.aliyunOssToken = aliyunOssToken;
+      }
+      var ossData = {};
+      let imgType = file.raw.type.split("/")[1];
+      // let filename = file.raw.name + file.raw.size; //md5对图片名称进行加密
+      let keyValue = this.uuid() + "." + imgType;
+
+      let form = new FormData();
+      form.append("name", file.raw.name);
+      form.append("key", 'outsite/' + keyValue);
+      form.append("policy", this.aliyunOssToken.policy);
+      form.append("OSSAccessKeyId", this.aliyunOssToken.accessid);
+      form.append("success_action_status", 200);
+      form.append("signature", this.aliyunOssToken.signature);
+      form.append("file", file.raw);
+
+      const config = {
+        headers: {
+          "Content-Type": "multipart/form-data;boundary=" + new Date().getTime()
+        }
+      };
+      axios
+        .post(this.aliyunOssToken.host, form, config)
+        .then(res => {
+          this.fileUrl = this.$store.state.settings.imgHead + keyValue;
+          this.isProgress = false;
+          this.$emit("input", keyValue);
+          this.$message.success("上传成功");
+        })
+        .catch(error => {
+          this.$message.error("上传失败");
+          console.log(error);
+        });
+    },
+
+    // 生成uuid
+    uuid() {
+      var s = [];
+      var hexDigits = "0123456789abcdef";
+      for (var i = 0; i < 36; i++) {
+        s[i] = hexDigits.substr(Math.floor(Math.random() * 0x10), 1);
+      }
+      s[14] = "4"; // bits 12-15 of the time_hi_and_version field to 0010
+      s[19] = hexDigits.substr((s[19] & 0x3) | 0x8, 1); // bits 6-7 of the clock_seq_hi_and_reserved to 01
+      s[8] = s[13] = s[18] = s[23] = "-";
+
+      var uuid = s.join("");
+      return uuid;
+    },
+
+    // 删除图片
+    delfileUrl() {
+      this.fileUrl = "";
+      this.$emit("input", "");
+    },
+    closeViewer() {
+      this.dialogVisible = false;
+    }
+  }
+};
+</script>
+
+<style lang="scss" scoped>
+.upload-box {
+  .avatar-uploader-box {
+    position: relative;
+    line-height: 0;
+    width: fit-content; //  收缩与包裹,收缩到合适
+    max-width: 400px;
+    .avatar-uploader {
+      /deep/ .el-upload {
+        border: 1px dashed #d9d9d9;
+        border-radius: 6px;
+        cursor: pointer;
+        position: relative;
+        overflow: hidden;
+        &:hover {
+          border-color: #409eff;
+        }
+      }
+
+      .avatar-uploader-icon {
+        font-size: 28px;
+        color: #8c939d;
+        min-width: 178px;
+        height: 178px;
+        line-height: 178px;
+        text-align: center;
+      }
+    }
+    .avatar {
+      border: 1px dashed #d9d9d9;
+      max-width: 240px;
+      min-width: 100px;
+      min-height: 40px;
+      display: block;
+    }
+    .progress-box {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      width: 99%;
+      height: 99%;
+      background: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .avatar-uploader-popup {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      background: rgba($color: #000000, $alpha: 0.5);
+      display: flex;
+      justify-content: space-evenly;
+      align-items: center;
+      color: #fff;
+      font-size: 20px;
+      border-radius: 6px;
+      i {
+        text-align: center;
+        padding: 0 5%;
+        font-size: 24px;
+      }
+    }
+    .file-placeholder {
+      height: 70px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      flex-wrap: wrap;
+      align-items: center;
+
+      img {
+        width: 50px;
+        height: 50px;
+      }
+
+      p {
+        font-size: 12px;
+        color: #bcbcbc;
+        line-height: 1;
+        padding: 2px;
+      }
+    }
+  }
+}
+</style>
+
+<template>
+  <div class="upload-box">
+    <div class="avatar-uploader-box">
+      <!-- 方框样式 -->
+      <el-upload
+        v-if="type==='avatar' && !imageUrl"
+        ref="avatarUploader"
+        class="avatar-uploader"
+        :action="$store.state.settings.actionUrl"
+        :show-file-list="false"
+        :on-change="handleAvatarChange"
+        :auto-upload="false"
+        accept="image/*"
+      >
+        <span
+          v-if="!imageUrl"
+          v-loading="loading"
+          element-loading-text="上传中"
+          element-loading-spinner="el-icon-loading"
+          element-loading-background="rgba(0, 0, 0, 0.8)"
+          style="line-height:30px;"
+        >
+          <i class="el-icon-plus avatar-uploader-icon" /></span>
+      </el-upload>
+
+      <!-- 上传的图片 -->
+      <img
+        v-if="imageUrl"
+        :src="imageUrl"
+        class="avatar"
+        @mouseover.stop="isShowPopup = true"
+      >
+
+      <!-- 显示查看和删除的按钮弹窗 -->
+      <div
+        v-show="imageUrl && isShowPopup"
+        class="avatar-uploader-popup"
+        @mouseleave="isShowPopup = false"
+      >
+        <i
+          class="el-icon-zoom-in"
+          @click="dialogVisible = true"
+        />
+        <i
+          class="el-icon-delete"
+          @click="delImageUrl"
+        />
+      </div>
+    </div>
+    <!-- 查看图片 -->
+    <el-image-viewer v-if="dialogVisible" :on-close="closeViewer" :url-list="[imageUrl]" />
+
+    <!-- 裁剪图片 start-->
+    <vue-cropper ref="VueCropperItem" :size="size" @confirm="confirmCropper" />
+    <!-- 裁剪图片 end-->
+  </div>
+</template>
+
+<script>
+import axios from 'axios'
+import { getqiniuToken, getOssSign } from '@/api/auth'
+import VueCropper from './components/cropper'
+import ElImageViewer from 'element-ui/packages/image/src/image-viewer'
+// 上传图片 export const uploadOss = params => http.upload(`/sys/oss/upload`, params)
+
+export default {
+  name: 'UploadItem',
+  components: {
+    VueCropper,
+    ElImageViewer
+  },
+  props: {
+    type: {
+      type: String,
+      default: 'avatar'
+    },
+    value: {
+      type: String,
+      default: ''
+    },
+    autoCropWidth: {
+      type: Number,
+      default: 275
+    },
+    autoCropHeight: {
+      type: Number,
+      default: 206
+    },
+    fixedBox: {
+      type: Boolean,
+      default: false
+    },
+    isCompress: { // 是否压缩
+      type: Boolean,
+      default: true
+    },
+    compress: { // 压缩率
+      type: String,
+      default: '0.8'
+    },
+    size: {
+      type: Array,
+      default: () => {
+        return [670, 471]
+      }
+    }
+  },
+  data() {
+    return {
+      loading: false,
+      isShowPopup: false,
+      dialogVisible: false,
+      isProgress: false,
+      percentage: 0,
+      imageUrl: ''
+    }
+  },
+  watch: {
+    value: {
+      handler(val) {
+        if (val) {
+          this.imageUrl = this.$store.state.settings.imgHead + val
+        } else {
+          this.imageUrl = ''
+        }
+      }
+    }
+  },
+  mounted() {
+    if (this.value) {
+      this.imageUrl = this.$store.state.settings.imgHead + this.value
+    } else {
+      this.imageUrl = ''
+    }
+  },
+  methods: {
+    // 上传之前
+    beforeAvatarUpload(file) {
+      return new Promise((resolve, reject) => {
+        if (!/\.(jpg|jpeg|png|JPG|PNG)$/.test(file.name)) {
+          return reject('上传图片只能是JPG或PNG格式!')
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+          return reject('上传图片大小不能超过5M!')
+        }
+
+        resolve('符合表單規則')
+      })
+    },
+
+    // 上传改变
+    async handleAvatarChange(file, fileList) {
+      try {
+        await this.beforeAvatarUpload(file)
+        // console.log('上传改变', file)
+        this.showVueCropperItem(file)
+      } catch (e) {
+        this.$message.warning(JSON.stringify(e))
+      }
+    },
+
+    // 上传图片接口
+    async uploadOssApi(data) {
+      try {
+        const { data: { qiniuToken: token }} = await getqiniuToken()
+
+        const params = new FormData()
+        // params.append('key', this.uuid())
+        params.append('token', token)
+        params.append('file', data)
+
+        const { data: { hash: hash }} = await axios.post(this.$store.state.settings.actionUrl, params)
+
+        this.imageUrl = this.$store.state.settings.imgHead + hash
+        this.isProgress = false
+        this.$emit('input', hash)
+      } catch (err) {
+        this.$message.error('上传失败')
+        this.imageUrl = ''
+        this.isProgress = false
+        this.$emit('input', '')
+      }
+    },
+
+    async uploadAliOss(file) {
+      if (!this.aliyunOssToken) {
+        const { data: aliyunOssToken } = await getOssSign();
+        this.aliyunOssToken = aliyunOssToken;
+      }
+      var ossData = {};
+      let imgType = file.type.split("/")[1];
+      let keyValue = this.uuid() + "." + imgType;
+
+      let form = new FormData();
+      form.append("name", file.name);
+      form.append("key", 'outsite/' + keyValue);
+      form.append("policy", this.aliyunOssToken.policy);
+      form.append("OSSAccessKeyId", this.aliyunOssToken.accessid);
+      form.append("success_action_status", 200);
+      form.append("signature", this.aliyunOssToken.signature);
+      form.append("file", file);
+
+      const config = {
+        headers: {
+          "Content-Type": "multipart/form-data;boundary=" + new Date().getTime()
+        }
+      };
+      axios
+        .post(this.aliyunOssToken.host, form, config)
+        .then(res => {
+          this.fileUrl = this.$store.state.settings.imgHead + keyValue;
+          this.isProgress = false;
+          this.$emit("input", keyValue);
+          this.$message.success("上传成功");
+        })
+        .catch(error => {
+          this.$message.error("上传失败");
+          console.log(error);
+        });
+    },
+    // 生成uuid
+    uuid() {
+      var s = []
+      var hexDigits = '0123456789abcdef'
+      for (var i = 0; i < 36; i++) {
+        s[i] = hexDigits.substr(Math.floor(Math.random() * 0x10), 1)
+      }
+      s[14] = '4' // bits 12-15 of the time_hi_and_version field to 0010
+      s[19] = hexDigits.substr((s[19] & 0x3) | 0x8, 1) // bits 6-7 of the clock_seq_hi_and_reserved to 01
+      s[8] = s[13] = s[18] = s[23] = '-'
+
+      var uuid = s.join('')
+      return uuid
+    },
+
+    // 删除图片
+    delImageUrl() {
+      this.imageUrl = ''
+      this.$emit('input', '')
+    },
+
+    // 显示裁剪框
+    showVueCropperItem(file) {
+      this.$refs.VueCropperItem.init()
+      this.$refs.VueCropperItem.fileName = file.name
+
+      this.$refs.VueCropperItem.options.img = URL.createObjectURL(file.raw)
+      this.setVueCropperOptions()
+    },
+
+    // 确认裁剪后上传
+    async confirmCropper(file) {
+      this.loading = true
+      await this.uploadAliOss(file)
+      this.loading = false
+    },
+
+    // 设置裁剪的配置
+    setVueCropperOptions() {
+      this.$refs.VueCropperItem.options.autoCropWidth = this.autoCropWidth
+      this.$refs.VueCropperItem.options.autoCropHeight = this.autoCropHeight
+      this.$refs.VueCropperItem.options.fixedBox = this.fixedBox
+
+      this.$refs.VueCropperItem.isCompress = this.isCompress // 是否压缩图片
+      this.$refs.VueCropperItem.compress = this.compress // 压缩率
+    },
+    closeViewer() {
+      this.dialogVisible = false
+    }
+
+  }
+}
+</script>
+
+<style lang="scss" scoped>
+.upload-box {
+  .avatar-uploader-box {
+    position: relative;
+    line-height: 0;
+    width: fit-content; //  收缩与包裹,收缩到合适
+    max-width: 400px;
+    .avatar-uploader {
+      /deep/ .el-upload {
+        border: 1px dashed #d9d9d9;
+        border-radius: 6px;
+        cursor: pointer;
+        position: relative;
+        overflow: hidden;
+        &:hover {
+          border-color: #409eff;
+        }
+      }
+
+      .avatar-uploader-icon {
+        font-size: 28px;
+        color: #8c939d;
+        min-width: 178px;
+        height: 178px;
+        line-height: 178px;
+        text-align: center;
+      }
+    }
+    .avatar {
+      border: 1px dashed #d9d9d9;
+      max-width: 240px;
+      min-width: 100px;
+      min-height: 40px;
+      display: block;
+    }
+    .progress-box {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      width: 99%;
+      height: 99%;
+      background: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .avatar-uploader-popup {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      background: rgba($color: #000000, $alpha: 0.5);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #fff;
+      font-size: 20px;
+      border-radius: 6px;
+      i {
+        width: 30%;
+        text-align: center;
+        padding: 0 5%;
+        font-size: 24px;
+      }
+    }
+  }
+}
+</style>
